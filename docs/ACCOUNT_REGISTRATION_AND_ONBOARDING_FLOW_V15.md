@@ -313,29 +313,92 @@ Upon receiving the tokens:
 ## 8. Phase 5: Activation Gatekeeper, Regional Rules & 18-State Machine
 
 Following authentication, the client polls the gatekeeper endpoints:
-- `POST https://hatch-api.meta.ai/hatch/activation_statuses` (`StefiHatchPath.ActivationStatuses`)
+- `POST https://hatch-api.meta.ai/hatch/activation_statuses?supported_retos_presentations[0]=bottom_sheet` (`StefiHatchPath.ActivationStatuses`)
 - `GET https://hatch-api.meta.ai/hatch/tos_status` (`StefiHatchPath.TosStatus`)
 
+### Complete Wire Schema: `ActivationStatusesResponseJson`
+Decompiled from `com.facebook.aura.user.repo.ActivationStatusesResponseJson`:
+```json
+{
+  "has_hatch_access": true,
+  "has_completed_hatch_activation": false,
+  "has_cleared_acquisition": true,
+  "has_provisioned_vm": false,
+  "has_redeemed_invite_code": false,
+  "is_in_geoblocked_region": false,
+  "is_nda_required": false,
+  "ccv_status": "not_required",
+  "requires_name": false,
+  "name_prefill": "Aura User",
+  "name_dialog": null,
+  "email_address_prefill": "user@example.com",
+  "is_vm_type_selection_required": true,
+  "is_vm_type_plan_required": false,
+  "hatch_wearables_linked": false,
+  "hatch_wearables_comms_consent": null,
+  "invite_code_entry_available": true,
+  "enter_invite_code_screen": null,
+  "waitlist_available": false,
+  "waitlist_status": "OFF_WAITLIST",
+  "waitlist_choice_screen": null,
+  "waitlisted_screen": null,
+  "waitlisted_limited_screen": null,
+  "retos": null
+}
+```
+
+### Complete Wire Schema: `TosStatusResponseJson`
+Decompiled from `com.facebook.aura.activation.repo.TosStatusResponseJson`:
+```json
+{
+  "has_accepted_tos": false,
+  "disclosure_title": "Meta Muse Terms of Service",
+  "disclosure_text": "Meta Muse Terms of Service and Privacy Policy...",
+  "disclosure_version": "2026.11.01",
+  "disclosure_button_text": "Agree and Continue",
+  "disclosure_entities": [],
+  "disclosure_sections": [],
+  "cvm_upsell_cell": null,
+  "subscription_disclosure_text": null,
+  "subscription_disclosure_entities": [],
+  "subscription_upsell_cell": null
+}
+```
+
 ### State Machine Definition (`com.facebook.aura.activation.data.ActivationState`)
-The client-side activation engine evaluates the response into one of 18 explicit states:
+The client-side activation engine evaluates the response into one of 18 explicit states via `ActivationState.Companion.getCurrentActivationState()` in strict priority order:
 
 1. `LOADING`: Cold startup state awaiting gateway payload.
-2. `GEO_BLOCKED`: `is_in_geoblocked_region == true`. User IP is outside authorized territories.
-3. `AGE_VERIFICATION`: `ccv_status == "ccv_required"`. Cross-Channel WebAuth verification required via Instagram/Facebook.
-4. `DISCLOSURE_ToS`: `has_accepted_tos == false`. Terms of Service disclosure pending acceptance.
-5. `NDA`: `is_nda_required == true`. Meta confidential non-disclosure agreement pending signature.
-6. `NAME_REQUIRED`: `requires_name == true`. Profile name missing from account metadata.
-7. `REQUEST_WAITLIST`: Region unsupported for auto-admission; user offered waitlist join.
-8. `ALREADY_WAITLISTED`: User has previously joined waitlist queue.
-9. `LIMITED_WAITLIST`: Regional capacity throttled; restricted access tier.
-10. `REQUEST_INVITE_CODE`: Admission gated strictly by invite code redemption.
-11. `VM_PROVISIONING`: Hardware enclave allocation actively executing in Meta infrastructure.
-12. `CONFIDENTIAL_VM_SETUP`: Security PIN configuration and hardware enclave key exchange.
-13. `WEARABLES_LINKING`: Smart glasses or smartwatch pairing flow active.
-14. `RETOS`: Updated Terms of Service re-consent required.
-15. `BLOCKED`: Account flagged or suspended for policy non-compliance.
-16. `NO_ACCESS`: System-level restriction or entitlement revocation.
-17. `FULLY_ACTIVATED`: All gatekeepers passed; conversational workspace unlocked.
+2. `RETOS`: `retos != null` or `has_pending_retos == true`. Updated Terms of Service re-consent required.
+3. `LIMITED_WAITLIST`: Regional capacity throttled; restricted access tier (`69d.A04`).
+4. `ALREADY_WAITLISTED`: User has previously joined waitlist queue (`69d.A06`).
+5. `REQUEST_WAITLIST`: Region unsupported for auto-admission; user offered waitlist join via `POST /hatch/waitlist/join`.
+6. `REQUEST_INVITE_CODE`: Admission gated strictly by invite code redemption.
+7. `GEO_BLOCKED`: `is_in_geoblocked_region == true`. User IP is outside authorized territories.
+8. `NO_ACCESS`: System-level restriction or entitlement revocation (`has_hatch_access == false`).
+9. `NDA`: `is_nda_required == true`. Meta confidential non-disclosure agreement pending signature.
+10. `BLOCKED`: Account flagged or suspended for policy non-compliance (`ccv_status == "blocked"`).
+11. `AGE_VERIFICATION`: `ccv_status == "ccv_required"`. Cross-Channel WebAuth verification required via Instagram/Facebook.
+12. `DISCLOSURE_ToS`: `has_accepted_tos == false`. Terms of Service disclosure pending acceptance.
+13. `WEARABLES_LINKING`: `hatch_wearables_linked == false` and linking required. Smart glasses pairing flow active.
+14. `NAME_REQUIRED`: `requires_name == true`. Profile name missing; resolved via `POST /hatch/viewer/name`.
+15. `CONFIDENTIAL_VM_SETUP`: `is_vm_type_selection_required == true` and PIN enrollment uncompleted.
+16. `FULLY_ACTIVATED`: All gatekeepers passed (`has_completed_hatch_activation == true`); conversational workspace unlocked.
+17. `VM_PROVISIONING`: Hardware enclave allocation actively executing in Meta infrastructure (`has_hatch_access == true`).
+
+### Specialized Gatekeeper Mutation Endpoints:
+- **Set Viewer Profile Name (`NAME_REQUIRED`):**
+  - **Endpoint:** `POST https://hatch-api.meta.ai/hatch/viewer/name`
+  - **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.SetViewerName`
+  - **Payload:** `{"name": "Aura Explorer"}`
+- **Join Waitlist (`REQUEST_WAITLIST`):**
+  - **Endpoint:** `POST https://hatch-api.meta.ai/hatch/waitlist/join`
+  - **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.WaitlistJoin`
+  - **Payload (`JoinWaitlistRequestJson`):** `{"region": "US"}`
+- **Wearables Linking & Consent (`WEARABLES_LINKING`):**
+  - `POST https://hatch-api.meta.ai/hatch/wearables/link` (`StefiHatchPath.WearablesLink`)
+  - `POST https://hatch-api.meta.ai/hatch/wearables/comms_consent` (`StefiHatchPath.WearablesCommsConsent`)
+  - `POST https://hatch-api.meta.ai/hatch/wearables/complimentary_offer` (`StefiHatchPath.WearablesComplimentaryOffer`)
 
 ### Regional Bypass Rules
 When requests originate from a verified US residential/mobile IP:
@@ -376,7 +439,39 @@ In release v15, the Terms of Service presentation is unified through `AuraDisclo
 
 ### 6.3 Dynamic NDA Agreement Acceptance (If Flagged)
 If `is_nda_required == true`, the client queries `AuraActivationRepository.fetchNdaAgreement()` and accepts:
-- **Endpoint:** `POST https://hatch-api.meta.ai/agreements/{agreement_id}/accept`
+- **Fetch NDA Agreement:**
+  - **Endpoint:** `GET https://hatch-api.meta.ai/hatch/agreements/{agreement_id}`
+  - **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.OneClickAgreement`
+  - **Response Payload (`NdaAgreementResponseJson`):**
+```json
+{
+  "agreement_id": "agr_nda_01h9e48f",
+  "title": "Meta Confidential Non-Disclosure Agreement",
+  "terms": [
+    {
+      "term_id": "term_confidentiality",
+      "text": "User agrees not to disclose unannounced features..."
+    }
+  ],
+  "version": "2026.11"
+}
+```
+- **Accept NDA Agreement:**
+  - **Endpoint:** `POST https://hatch-api.meta.ai/hatch/agreements/{agreement_id}/accept`
+  - **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.OneClickAgreementAccept`
+  - **Request Payload (`NdaAcceptRequestJson`):**
+```json
+{
+  "disclosure_text": "Meta Confidential Non-Disclosure Agreement...",
+  "disclosure_version": "2026.11"
+}
+```
+  - **Response Payload (`NdaAcceptResponseJson`):**
+```json
+{
+  "accepted": true
+}
+```
 
 ---
 
@@ -391,6 +486,7 @@ sequenceDiagram
     participant Gate as ConfidentialVmSetupGate
     participant Repo as AuraActivationRepository
     participant API as Hatch API Gateway
+    participant Vesta as Meta Vesta HSM v2
 
     UI->>VM: onPurchaseConfirmed()
     VM->>VM: acceptTerms(tosMetadata)
@@ -399,9 +495,12 @@ sequenceDiagram
     alt New Enclave User
         Gate-->>VM: ViewEffect.CreatePin
         UI->>UI: Show Hardware Enclave PIN Creation
+        UI->>Vesta: OPAQUE PAKE Key Exchange (RFC 9842)
+        UI->>API: POST /hatch/pin/update (PinUpdateRequestJson)
     else Existing Enclave User
         Gate-->>VM: ViewEffect.EnterExistingPin
         UI->>UI: Show PIN Unlock Dialog
+        UI->>API: POST /hatch/pin/confirm (PinConfirmRequestJson)
     end
     UI->>API: POST /hatch/cold-lease-cvm (idempotency_key)
     API-->>UI: ColdLeaseCvmResponseJson (vm_id, created: true)
@@ -422,6 +521,39 @@ sequenceDiagram
 {
   "vm_id": "cvm_us_east_4b9a8201",
   "created": true
+}
+```
+
+### Hardware Security Module: Meta Vesta v2 & PIN Cryptography
+Confidential VM credentials and escrow state are protected via Meta Vesta HSM v2 (`libxplat_rust_vesta_client_v2_proto_vesta_proto-rustAndroid.so`):
+- **Vesta User Info Query:**
+  - **Endpoint:** `GET https://hatch-api.meta.ai/hatch/vesta/user_info`
+  - **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.VestaUserInfo`
+  - **Response (`ConfidentialVmVestaUserInfoResponseJson`):**
+```json
+{
+  "has_vesta_account": true,
+  "vesta_user_id": "vusr_01h9e48f7a99b2401bcdae8901",
+  "enrolled_pin_revision": 1
+}
+```
+- **Enclave PIN Creation / Update (`PinUpdateRequestJson`):**
+```json
+{
+  "encrypted_pin_verifier": "opaque_v2_pake_verifier_base64...",
+  "last_successful_entry_at_ms": 1794011607000,
+  "update_id": "upd_01h9e48f",
+  "replaces_update_id": null
+}
+```
+- **Enclave PIN Confirmation (`PinConfirmRequestJson`):**
+```json
+{
+  "reminder_id": "rem_01h9e48",
+  "update_id": "upd_01h9e48f",
+  "state_revision": 1,
+  "last_successful_entry_at_ms": 1794011607000,
+  "had_wrong_guess": false
 }
 ```
 
@@ -531,9 +663,30 @@ When redemption fails, the server emits `application/problem+json`:
 - `inviteCodeUsedUp`: Redemption quota exhausted.
 - `inviteCodeRevoked`: Administrator revocation.
 
-#### Debug Reset Endpoint (Meta Dogfooding Builds)
-- **Endpoint:** `POST https://hatch-api.meta.ai/hatch/debug/reset_invite_code_redemption`
-- **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.DebugResetInviteCodeRedemption`
+#### Step 6: Sponsor Invite Code Generation (`POST /hatch/invite_code/generate`)
+Active users who have cleared onboarding can generate their own sponsor invite codes to distribute to peers:
+- **Endpoint:** `POST https://hatch-api.meta.ai/hatch/invite_code/generate`
+- **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.InviteCodeGenerate`
+- **Response Payload (`GenerateInviteCodeResponseJson`):**
+```json
+{
+  "code": "MUSE-ALPHA-9821",
+  "invite_link": "https://agent.meta.ai/invite?code=MUSE-ALPHA-9821",
+  "max_uses": 5,
+  "use_count": 0,
+  "share_text": "Join me on Meta Muse using my VIP invite code: MUSE-ALPHA-9821"
+}
+```
+
+#### Debug Reset Endpoints (Meta Internal Dogfooding Builds)
+- **Reset Invite Code Redemption:**
+  - **Endpoint:** `POST https://hatch-api.meta.ai/hatch/debug/reset_invite_code_redemption`
+  - **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.DebugResetInviteCodeRedemption`
+  - **Response (`DebugResetInviteCodeRedemptionResponseJson`):** `{"success": true}`
+- **Reset Complete Activation State:**
+  - **Endpoint:** `POST https://hatch-api.meta.ai/hatch/debug/reset_activation`
+  - **Class Identifier:** `com.facebook.aura.network.api.StefiHatchPath.DebugResetActivation`
+  - **Response (`DebugResetActivationResponseJson`):** `{"success": true}`
 
 ---
 
